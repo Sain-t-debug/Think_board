@@ -1,34 +1,38 @@
 import { Ratelimit } from "@upstash/ratelimit";
-import redis from "../config/upstash.js"; 
+import redis from "../config/upstash.js";
 
-const ratelimit = new Ratelimit({
-redis: redis, // This now successfully receives the Redis instance!
-limiter: Ratelimit.slidingWindow(100, "60 s"),
-analytics: true,
-}); 
+// No Redis configured (e.g. env vars missing on the host) -> fail open.
+const ratelimit = redis
+  ? new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(100, "60 s"),
+      analytics: true,
+    })
+  : null;
 
 export const rateLimiter = async (req, res, next) => {
-try {
-const identifier = req.ip || req.headers["x-forwarded-for"] || "anonymous";
-const { success, limit, remaining, reset } = await ratelimit.limit(identifier); 
+  if (!ratelimit) return next();
 
-res.setHeader("X-RateLimit-Limit", limit);
-res.setHeader("X-RateLimit-Remaining", remaining);
+  try {
+    const identifier = req.ip || req.headers["x-forwarded-for"] || "anonymous";
+    const { success, limit, remaining, reset } = await ratelimit.limit(identifier);
 
-if (!success) {
-const secondsToWait = Math.max(0, Math.ceil((reset - Date.now()) / 1000));
-res.setHeader("Retry-After", secondsToWait);
+    res.setHeader("X-RateLimit-Limit", limit);
+    res.setHeader("X-RateLimit-Remaining", remaining);
 
-return res.status(429).json({
-error: "Too many requests. Please try again later.",
-retryAfterSeconds: secondsToWait,
-});
-}
+    if (!success) {
+      const secondsToWait = Math.max(0, Math.ceil((reset - Date.now()) / 1000));
+      res.setHeader("Retry-After", secondsToWait);
 
-next();
+      return res.status(429).json({
+        error: "Too many requests. Please try again later.",
+        retryAfterSeconds: secondsToWait,
+      });
+    }
 
-} catch (error) {
-console.error("Rate limit infrastructure failure:", error);
-next();
-}
+    next();
+  } catch (error) {
+    console.error("Rate limit infrastructure failure:", error);
+    next();
+  }
 };
